@@ -17,6 +17,7 @@ using Static: known
 using StaticArrays: SVector
 using ThreadingUtilities: initialize_task
 using TiledIteration: TileIterator, padded_tilesize
+using IterativeSolvers: cg!
 
 using LinearAlgebra
 using FFTW
@@ -38,7 +39,7 @@ include("unwrap/unwrap.jl")
 export ismv, lbv, pdf, sharp, vsharp
 include("bgremove/bgremove.jl")
 
-export nltv, rts, tikh, tkd, tsvd, tv
+export nltv, rts, tikh, tkd, tsvd, tv, ikd
 include("inversion/inversion.jl")
 
 
