@@ -39,7 +39,7 @@ include("unwrap/unwrap.jl")
 export ismv, lbv, pdf, sharp, vsharp
 include("bgremove/bgremove.jl")
 
-export nltv, rts, tikh, tkd, tsvd, tv, ikd
+export nltv, rts, tikh, tkd, tsvd, tv, ikd, ndi
 include("inversion/inversion.jl")
 
 

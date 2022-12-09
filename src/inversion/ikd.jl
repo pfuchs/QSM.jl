@@ -122,7 +122,7 @@ function _ikd!(
 
         # Perform direct deconvolution
         # b = D^-1 F M f
-        # TODO: Mask before?
+        @bfor xp[I] *= m[I]
         mul!(X̂, P, xp)
         @bfor begin
             b = D[I]*K[I]
