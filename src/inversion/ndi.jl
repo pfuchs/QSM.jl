@@ -2,7 +2,7 @@
     ndi(
         f::AbstractArray{T, N}
         vsz::NTuple{3, Real};
-        lambda::Real = 0.2,
+        alpha::Real = 0.2,
         tol::Real = 1e-1,
         maxit::Integer = 100,
         W::AbstractArray{T, M ∈ (3, N)},
@@ -21,8 +21,8 @@ Incomplete Spectrum deconvolution using admm [1]
 - `mask::AbstractArray{Bool, 3}`: binary mask of region of interest
 
 ### Keywords
-- `lambda::Real = 1e-3`: regularization parameter
-- `rho::Real = 100*lambda`: Lagrange multiplier penalty parameter
+- `alpha::Real = 1e-3`: regularization parameter
+- `rho::Real = 100*alpha`: Lagrange multiplier penalty parameter
 - `mu::Real = 1`: Lagrange multiplier penalty parameter (unused if `W = nothing`)
 - `tol::Real = 1e-3`: stopping tolerance
 - `maxit::Integer = 250`: maximum number of iterations
@@ -42,60 +42,72 @@ Incomplete Spectrum deconvolution using admm [1]
 [1] Polak D, et al. NMR Biomed 2020
 """
 function ndi(
-    f::AbstractArray{T, N}
+    f::AbstractArray{T, N},
     vsz::NTuple{3, Real};
-    lambda::Real = 0.2,
-    tol::Real = 1e-1,
+    alpha::Real = 1e-5,
+    tol::Real = 1e-2,
     maxit::Integer = 100,
-    W::Union{Nothing, AbstractArray{<:AbstractFloat, M ∈ (3, N)}} = nothing,
+    W::Union{Nothing, AbstractArray{<:AbstractFloat}} = nothing,
     tau::Real = 2.0,
     pad::NTuple{3, Integer} = (0, 0, 0),
     Dkernel::Symbol = :k,
     bdir::NTuple{3, Real} = (0, 0, 1),
-    verbose::Bool = false,
+    verbose::Bool = false
 ) where {T, N}
     N ∈ (3, 4) || throw(ArgumentError("arrays must be 3d or 4d, got $(N)d"))
-    return _ikd!(
-        tzero(f), f, vsz, lambda, tol, maxit, W, tau, pad, Dkernel, bdir, verbose
+    return _ndi!(
+        tzero(f), f, vsz, alpha, tol, maxit, W, tau, pad, Dkernel, bdir, verbose
     )
 end
 
 function _ndi!(
     x::AbstractArray{<:AbstractFloat, N},
     f::AbstractArray{T, N},
-    mask::AbstractArray{Bool, 3},
     vsz::NTuple{3, Real},
+    alpha::Real,
+    tol::Real,
+    maxit::Integer,
+    W::Union{Nothing, AbstractArray{<:AbstractFloat}},
+    tau::Real,
     pad::NTuple{3, Integer},
     Dkernel::Symbol,
     bdir::NTuple{3, Real},
-    lambda::Real,
-    tol::Real,
-    maxit::Integer,
     verbose::Bool,
 ) where {T, N}
     N ∈ (3, 4) || throw(ArgumentError("arrays must be 3d or 4d, got $(N)d"))
 
     checkshape(x, f, (:x, :f))
-    checkshape(axes(mask), axes(f)[1:3], (:mask, :f))
 
     checkopts(Dkernel, (:k, :kspace, :i, :ispace), :Dkernel)
+
+    if W !== nothing
+        checkshape(Bool, axes(W), axes(f)[1:3]) ||
+        checkshape(W, f, (:W, :f))
+    end
 
     # convert scalars
     zeroT = zero(T)
 
-    λ = convert(T, lambda)
+    α = convert(T, alpha)
+    τ = convert(T, tau)
     ϵ = convert(T, tol)
 
     # pad to fast fft size
     xp = padfastfft(@view(f[:,:,:,1]), pad, rfft=true)
-    m = padfastfft(mask, pad, rfft=true)
+
 
     # initialize variables and fft
-    sz0 = size(mask)
-    sz  = size(m)
+    sz0 = size(@view(f[:,:,:,1]))
+    sz  = size(xp)
     sz_ = (sz[1]>>1 + 1, sz[2], sz[3])
 
-    x0 = similar(xp)    
+    fp = similar(xp)
+    x0 = similar(xp)
+    x̂ = similar(xp)
+
+    if W !== nothing
+        Wp = similar(xp)
+    end
 
     D  = Array{T}(undef, sz_)           # dipole kernel
     K  = Array{T}(undef, sz_)           # band-limit kernel
@@ -108,35 +120,56 @@ function _ndi!(
     iP = inv(P)
 
     # get kernels
-    D = _dipole_kernel!(D, X̂, xp, sz0, vsz, bdir, P, Dkernel, :rfft)
-    @bfor K[I] = abs(D[I]) > λ
-
+    D = _dipole_kernel!(D, X̂, xp, sz, vsz, bdir, P, Dkernel, :rfft)
+    DT = conj(D)
 
     for t in axes(f, 4)
         if verbose && size(f, 4) > 1
             @printf("Echo: %d/%d\n", t, size(f, 4))
         end
 
-        xp = padarray!(xp, @view(f[:, :, :, t]))
+        fp = padarray!(fp, @view(f[:, :, :, t]))
+        xp = copyto!(xp, fp)
+        # x0 = zeros(T, size(fp))
 
+        if W !== nothing
+            Wp = padarray!(Wp, @view(W[:,:,:,min(t, end)]))
+        end
 
         verbose &&   @printf("\n iter\t  ||x-xprev||/||x||\n")
+        
         for i in 1:maxit
             x0, xp = xp, x0
 
-            @bfor xp[I] -= tau*alpha*x0[I]
-
-            X̂ = P * x0
-            @bfor X̂[I] *= D[I]
-            x0 = iP * X̂
-
-            x0 = sin( x0 - x )
-            @bfor x0 = W[I] * sin( x0[I] - x[I] )
-            X̂ = P * x0
-            @bfor X̂[I] *= conj(D[I])
-            x0 = iP * X̂
-            @bfor x0[I] += xp[I] 
+            x̂ = copyto!(x̂, xp)
+            susc2field!(x̂, X̂, D, P, iP)
             
+            @bfor x̂[I] = sin( x̂[I] - fp[I] )
+            if W !== nothing
+                @bfor x̂[I] *= Wp[I] 
+            end
+
+            susc2field!(x̂, X̂, DT, P, iP)
+
+            @bfor x0[I] = xp[I] - tau * x̂[I] - tau * alpha * x0[I]
+            
+            # mul!(X̂, P, x0)
+            # @bfor X̂[I] *= D[I]
+            # mul!(x0, iP, X̂)
+
+            # @bfor x0[I] -= fp[I]
+            # @bfor x0[I] = sin(x0[I])
+
+            # mul!(X̂, P, x0)
+            # @bfor X̂[I] *= DT[I]
+            # mul!(x0, iP, X̂)
+
+            # @bfor x0[I] *= τ
+            # @bfor x0[I] += x0[I] * (1 - τ * α)
+
+
+            # x0 = xp - τ * (iP * (DT .* (P * ( (iP * (D .* (P * x0 ))) - fp)))) - τ * α * x0
+
             @batch threadlocal=zeros(T, 2)::Vector{T} for I in eachindex(xp)
                 a, b = xp[I], x0[I]
                 threadlocal[1] = muladd(a-b, a-b, threadlocal[1])
@@ -144,15 +177,44 @@ function _ndi!(
             end
             ndx, nx = sqrt.(sum(threadlocal::Vector{Vector{T}}))
 
+            # e1, e2 = freq_energy(xp, m1, m2, P)
+
             verbose && @printf("%3d\t   %.4f\n", i, ndx/nx)
             
+            # if (e1 > e2) && (i > 3)
+                # verbose && @printf("Early stopping reached.\n")
+                # break
+            # end
             if ndx < ϵ*nx || i == maxit
                 break
             end
-
-            unpadarray!(@view(x[:,:,:,t]), xp)
         end
+
+        unpadarray!(@view(x[:,:,:,t]), x0)
+
+        if verbose
+            println()
+        end
+
     end
 
     return x
+end
+
+function susc2field!(v, X̂, D, P, iP)
+    mul!(X̂, P, v)
+    @bfor X̂[I] *= D[I]
+    mul!(v, iP, X̂)
+    return v
+end
+
+function freq_energy( x, m1, m2, P)
+    fx = P*x
+    
+    n1 = sum(m1)
+    n2 = sum(m2)
+
+    e1 = sum( fx*m1 ) / n1
+    e2 = sum( fx*m2 ) / n2
+    return e1, e2
 end

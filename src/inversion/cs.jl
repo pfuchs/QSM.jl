@@ -1,5 +1,5 @@
 """
-    ikd(
+    cs(
         f::AbstractArray{<:AbstractFloat, N ∈ (3,4)},
         mask::AbstractArray{Bool, 3},
         vsz::NTuple{3, Real};
@@ -12,7 +12,7 @@
         verbose::Bool = false,
     ) -> typeof(similar(f))
 
-Incomplete Spectrum deconvolution using CG [1]
+Compressed Sensing deconvolution using FISTA [1]
 
 ### Arguments
 - `f::AbstractArray{<:AbstractFloat, N ∈ (3, 4)}`: unwrapped (multi-echo) local
@@ -39,7 +39,7 @@ Incomplete Spectrum deconvolution using CG [1]
 ### References
 [1] Fuchs P, Shmueli K. Incomplete Spectrum Quantitative Susceptibility Mapping
 """
-function ikd(
+function cs(
     f::AbstractArray{T, N},
     mask::AbstractArray{Bool, 3},
     vsz::NTuple{3, Real};
@@ -52,12 +52,12 @@ function ikd(
     verbose::Bool = false,
 ) where {T, N}
     N ∈ (3, 4) || throw(ArgumentError("arrays must be 3d or 4d, got $(N)d"))
-    return _ikd!(
+    return _cs!(
         tzero(f), f, mask, vsz, pad, Dkernel, bdir,delta, tol, maxit, verbose
     )
 end
 
-function _ikd!(
+function _cs!(
     x::AbstractArray{<:AbstractFloat, N},
     f::AbstractArray{T, N},
     mask::AbstractArray{Bool, 3},
@@ -80,7 +80,7 @@ function _ikd!(
     # convert scalars
     zeroT = zero(T)
 
-    δ = convert(T, delta)
+    λ = convert(T, delta)
     ϵ = convert(T, tol)
 
     # pad to fast fft size
@@ -106,7 +106,7 @@ function _ikd!(
 
     # get kernels
     D = _dipole_kernel!(D, X̂, xp, sz0, vsz, bdir, P, Dkernel, :rfft)
-    @bfor K[I] = abs(D[I]) > δ
+    @bfor K[I] = abs(D[I]) > λ
 
     for t in axes(f, 4)
         if verbose && size(f, 4) > 1
@@ -135,7 +135,7 @@ function _ikd!(
         
         # cg
         A = LinearMap{complex(T)}(
-            (Av, v) -> _A_ikd!(Av, v, K, m, P, iP, sz),
+            (Av, v) -> _A_cs!(Av, v, K, m, P, iP, sz),
             length(m),
             ishermitian = true,
             ismutating = true
@@ -228,7 +228,7 @@ end
 
 # @inline done(maxiter::Int, iteration::Int, tol::Real, residual::Real) = iteration ≥ maxiter || converged(tol, residual)
 
-function _A_ikd!(Av, v, K, m, P, iP, sz)
+function _A_cs!(Av, v, K, m, P, iP, sz)
     Av = reshape(Av, sz)
     v = reshape(v, sz)
     v̂ = P*v
