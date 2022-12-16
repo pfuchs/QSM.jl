@@ -278,6 +278,10 @@ function _nltv!(
                 break
             end
 
+            if isnan(ndx/nx)
+                @printf("encountered an error\n ndx=%.4e\t nx=%.4e\n", ndx, nx)
+                break
+            end
             ##################################################################
             # z - subproblem and Lagrange multiplier update
             ##################################################################

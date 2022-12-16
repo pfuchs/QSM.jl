@@ -99,7 +99,8 @@ function _ndi!(
     # initialize variables and fft
     sz0 = size(@view(f[:,:,:,1]))
     sz  = size(xp)
-    sz_ = (sz[1]>>1 + 1, sz[2], sz[3])
+    # sz_ = (sz[1]>>1 + 1, sz[2], sz[3])
+    sz_ = sz
 
     fp = similar(xp)
     x0 = similar(xp)
@@ -116,12 +117,14 @@ function _ndi!(
     F̂ = Array{real(T)}(undef, sz)   # pre-computed rhs
 
     FFTW.set_num_threads(FFTW_NTHREADS[])
-    P = plan_rfft(xp)
+    P = plan_fft(xp)
     iP = inv(P)
 
     # get kernels
-    D = _dipole_kernel!(D, X̂, xp, sz, vsz, bdir, P, Dkernel, :rfft)
+    D = _dipole_kernel!(D, X̂, xp, sz, vsz, bdir, P, Dkernel, :fft)
     DT = conj(D)
+
+    m1,m2 = create_freqmasks_auto( vsz, D )
 
     for t in axes(f, 4)
         if verbose && size(f, 4) > 1
@@ -171,20 +174,20 @@ function _ndi!(
             # x0 = xp - τ * (iP * (DT .* (P * ( (iP * (D .* (P * x0 ))) - fp)))) - τ * α * x0
 
             @batch threadlocal=zeros(T, 2)::Vector{T} for I in eachindex(xp)
-                a, b = xp[I], x0[I]
+                a, b = x0[I], xp[I]
                 threadlocal[1] = muladd(a-b, a-b, threadlocal[1])
                 threadlocal[2] = muladd(a, a, threadlocal[2])
             end
             ndx, nx = sqrt.(sum(threadlocal::Vector{Vector{T}}))
 
-            # e1, e2 = freq_energy(xp, m1, m2, P)
+            e1, e2 = freq_energy(x0, m1, m2, P)
 
             verbose && @printf("%3d\t   %.4f\n", i, ndx/nx)
             
-            # if (e1 > e2) && (i > 3)
-                # verbose && @printf("Early stopping reached.\n")
-                # break
-            # end
+            if (e1 > e2) && (i > 3)
+                verbose && @printf("Early stopping reached.\n")
+                break
+            end
             if ndx < ϵ*nx || i == maxit
                 break
             end
@@ -208,13 +211,91 @@ function susc2field!(v, X̂, D, P, iP)
     return v
 end
 
+
+"""
+Calculates the Mean Amplitude of the energy inside masks
+m1, m2 and (optional) m3 in the Fourier domain of QSM reconstruction chi.
+
+The estimation of the Mean Amplitude may be the mean magnitude 
+of the coefficients (power = 1) or the squared mean of the 
+coefficients (power = 2). Both are robust estimators.
+
+Last modified by Carlos Milovic in 2020.07.08
+"""
 function freq_energy( x, m1, m2, P)
-    fx = P*x
+    fx = P * x
     
     n1 = sum(m1)
     n2 = sum(m2)
 
-    e1 = sum( fx*m1 ) / n1
-    e2 = sum( fx*m2 ) / n2
+    e1 = sum( fx .* m1 ) / n1
+    e2 = sum( fx .* m2 ) / n2
     return e1, e2
+end
+
+
+"""
+Calculates the masks that define Regions of Interest in the Fourier domain of
+reconstructed QSM images. These masks are defined by boundares that depend on:
+1) Dipole kernel coefficients.
+2) Absolute frequency radial range.
+Default values are those suggested by:
+
+Milovic C, et al. Comparison of Parameter Optimization Methods for Quantitative 
+Susceptibility Mapping. Magn Reson Med. 2020. DOI: 10.1002/MRM.28435 
+
+Parameters:
+vsz: voxel size in mm.
+kernel:  dipole kernel matrix, as calculated by the dipole_kernel function.
+
+Output:
+m1, m2: binary masks defining two regions in the Fourier domain, for NDI stopping.
+
+Created by Carlos Milovic, 05.08.2020
+Last modified by Patrick Fuchs, 16.12.2022
+TODO: Modify for real valued FFT dipole kernel
+"""
+function create_freqmasks_auto( vsz, kernel )
+    sz = size(kernel)
+    
+    center = 1 .+ fld.(sz, 2)
+    
+    rin = maximum(vsz)*0.65/2  # Radial boundaries of the masks are defined as absolute 
+    rout = maximum(vsz)*0.95/2 # frequency values [1/mm]. Please modify if needed.
+    
+    kx = 1:sz[1]
+    ky = 1:sz[2]
+    kz = 1:sz[3]
+    
+    kx = kx .- center[1]
+    ky = ky .- center[2]
+    kz = kz .- center[3]
+    
+    delta_kx = vsz[1]/sz[1]
+    delta_ky = vsz[2]/sz[2]
+    delta_kz = vsz[3]/sz[3]
+    
+    kx = kx .* delta_kx
+    ky = ky .* delta_ky
+    kz = kz .* delta_kz
+    
+    kx = reshape(kx,length(kx),1,1)
+    ky = reshape(ky,1,length(ky),1)
+    kz = reshape(kz,1,1,length(kz))
+    
+    kx = repeat(kx,outer=(1, sz[2], sz[3]))
+    ky = repeat(ky,outer=(sz[1], 1, sz[3]))
+    kz = repeat(kz,outer=(sz[1], sz[2], 1))
+    
+    k2 = kx.^2 .+ ky.^2 .+ kz.^2
+    
+    m0 = ones(sz)
+    m0[k2 .> rout^2] .= 0.0
+    m0[k2 .< rin^2]  .= 0.0
+    m0 = fftshift(m0) # Internal mask defining the radial range.
+    
+    m1 = (m0) .* ((abs.(kernel) .> 0.15)  - (abs.(kernel) .> 0.2)   ) # green
+    m2 = (m0) .* ((abs.(kernel) .> 0.225) - (abs.(kernel) .> 0.275) ) # cyan
+    
+    return m1, m2
 end
