@@ -43,6 +43,7 @@ Incomplete Spectrum deconvolution using admm [1]
 """
 function ndi(
     f::AbstractArray{T, N},
+    mask::AbstractArray{Bool, 3},
     vsz::NTuple{3, Real};
     alpha::Real = 1e-5,
     tol::Real = 1e-2,
@@ -94,7 +95,7 @@ function _ndi!(
 
     # pad to fast fft size
     xp = padfastfft(@view(f[:,:,:,1]), pad, rfft=true)
-
+    xp = complex(xp)
 
     # initialize variables and fft
     sz0 = size(@view(f[:,:,:,1]))
@@ -121,7 +122,7 @@ function _ndi!(
     iP = inv(P)
 
     # get kernels
-    D = _dipole_kernel!(D, X̂, xp, sz, vsz, bdir, P, Dkernel, :fft)
+    D = _dipole_kernel!(D, X̂, real(xp), sz, vsz, bdir, P, Dkernel, :fft)
     DT = conj(D)
 
     m1,m2 = create_freqmasks_auto( vsz, D )
@@ -173,18 +174,21 @@ function _ndi!(
 
             # x0 = xp - τ * (iP * (DT .* (P * ( (iP * (D .* (P * x0 ))) - fp)))) - τ * α * x0
 
-            @batch threadlocal=zeros(T, 2)::Vector{T} for I in eachindex(xp)
-                a, b = x0[I], xp[I]
-                threadlocal[1] = muladd(a-b, a-b, threadlocal[1])
-                threadlocal[2] = muladd(a, a, threadlocal[2])
-            end
-            ndx, nx = sqrt.(sum(threadlocal::Vector{Vector{T}}))
+            # @batch threadlocal=zeros(complex(T), 2)::Vector{complex(T)} for I in eachindex(xp)
+                # a, b = x0[I], xp[I]
+                # threadlocal[1] = muladd(a-b, a-b, threadlocal[1])
+                # threadlocal[2] = muladd(a, a, threadlocal[2])
+            # end
+            # ndx, nx = sqrt.(sum(threadlocal::Vector{Vector{complex(T)}}))
+
+            ndx = abs(sqrt(sum((x0 .- xp) .* (x0 .- xp))))
+            nx = abs(sqrt(sum(x0 .* x0)))
 
             e1, e2 = freq_energy(x0, m1, m2, P)
 
             verbose && @printf("%3d\t   %.4f\n", i, ndx/nx)
             
-            if (e1 > e2) && (i > 3)
+            if (abs(e1) > abs(e2)) && (i > 3)
                 verbose && @printf("Early stopping reached.\n")
                 break
             end
@@ -193,7 +197,7 @@ function _ndi!(
             end
         end
 
-        unpadarray!(@view(x[:,:,:,t]), x0)
+        unpadarray!(@view(x[:,:,:,t]), real(x0))
 
         if verbose
             println()

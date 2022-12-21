@@ -46,7 +46,7 @@ function ikd(
     pad::NTuple{3, Integer} = (0, 0, 0),
     Dkernel::Symbol = :k,
     bdir::NTuple{3, Real} = (0, 0, 1),
-    delta::Real = 0.24,
+    delta::Real = 0.28,
     tol::Real = 1e-1,
     maxit::Integer = 100,
     verbose::Bool = false,

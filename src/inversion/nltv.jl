@@ -279,7 +279,7 @@ function _nltv!(
             end
 
             if isnan(ndx/nx)
-                @printf("encountered an error\n ndx=%.4e\t nx=%.4e\n", ndx, nx)
+                @warn "Stepsize is NaN, something has gone wrong (threading perhaps?) exiting nltv."
                 break
             end
             ##################################################################
