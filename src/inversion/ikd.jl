@@ -53,7 +53,7 @@ function ikd(
 ) where {T, N}
     N ∈ (3, 4) || throw(ArgumentError("arrays must be 3d or 4d, got $(N)d"))
     return _ikd!(
-        tzero(f), f, mask, vsz, pad, Dkernel, bdir,delta, tol, maxit, verbose
+        tzero(f), f, mask, vsz, pad, Dkernel, bdir, delta, tol, maxit, verbose
     )
 end
 
@@ -146,6 +146,12 @@ function _ikd!(
         cg!(vec(xp), A, vec(F̂); abstol=ϵ, maxiter=maxit, verbose=verbose)
         xp = reshape(xp, sz)
 
+        # Dp = D.*K + (K.==0).*δ
+        # psf = iP * (D./Dp)
+        # psf = psf[1]
+        # @info "PSF Correction $psf"
+
+        xp .*= (1/sqrt(2*pi))
         # ##################################################################
         # # Initalise CG iterations
         # ##################################################################
