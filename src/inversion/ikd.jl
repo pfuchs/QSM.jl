@@ -126,7 +126,6 @@ function _ikd!(
         @bfor xp[I] *= m[I]
         F̂ = mul!(F̂, P, xp)
 
-        # @bfor F̂[I] *= (K[I] * inv(D[I]))
         @bfor begin
             b = D[I]*K[I]
             if iszero(b)
