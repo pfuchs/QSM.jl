@@ -92,21 +92,27 @@ function _ikd!(
     sz  = size(m)
     sz_ = (sz[1]>>1 + 1, sz[2], sz[3])
 
-    x0 = similar(xp)    
+    D  = Array{T, 3}(undef, sz_)            # dipole kernel
+    K  = Array{T}(undef, sz_)               # band-limit
+    F̂ = Array{complex(T), 3}(undef, sz_)    # in-place rfft var
 
-    D  = Array{T}(undef, sz_)           # dipole kernel
-    K  = Array{T}(undef, sz_)           # band-limit kernel
-
-    X̂ = Array{complex(T)}(undef, sz_)   # in-place rfft var
-    F̂ = Array{real(T)}(undef, sz)   # pre-computed rhs
+    b = Array{real(T), 3}(undef, sz)    # pre-computed rhs
 
     FFTW.set_num_threads(FFTW_NTHREADS[])
     P = plan_rfft(xp)
     iP = inv(P)
 
-    # get kernels
-    D = _dipole_kernel!(D, X̂, xp, sz0, vsz, bdir, P, Dkernel, :rfft)
+    x0 = similar(xp)
+
+    # get dipole kernel
+    D = _dipole_kernel!(D, F̂, xp, sz0, vsz, bdir, P, Dkernel, :rfft)
+
+    # band-limit
     @bfor K[I] = abs(D[I]) > δ
+
+    # inverse k-space kernel
+    # @bfor D[I] = inv(D[I])
+    # iD = D
 
     for t in axes(f, 4)
         if verbose && size(f, 4) > 1
@@ -118,20 +124,22 @@ function _ikd!(
         # Perform direct deconvolution
         # b = D^-1 F M f
         @bfor xp[I] *= m[I]
-        mul!(X̂, P, xp)
+        F̂ = mul!(F̂, P, xp)
+
+        # @bfor F̂[I] *= (K[I] * inv(D[I]))
         @bfor begin
             b = D[I]*K[I]
             if iszero(b)
-                X̂[I] = zeroT
+                F̂[I] = zeroT
             else
-                X̂[I] = inv(b) * X̂[I]
+                F̂[I] = inv(b) * F̂[I]
             end
         end
 
         # Initalise rhs (normal equation)
         # b = A^H F̂^H
-        mul!(F̂, iP, X̂)
-        @bfor F̂[I] *= m[I]
+        b = mul!(b, iP, F̂)
+        @bfor b[I] *= m[I]
         
         # cg
         A = LinearMap{complex(T)}(
@@ -143,82 +151,8 @@ function _ikd!(
 
         verbose && @printf("\n iter\tresidual\n")
 
-        cg!(vec(xp), A, vec(F̂); abstol=ϵ, maxiter=maxit, verbose=verbose)
+        cg!(vec(xp), A, vec(b); abstol=ϵ, maxiter=maxit, verbose=verbose)
         xp = reshape(xp, sz)
-
-        # Dp = D.*K + (K.==0).*δ
-        # psf = iP * (D./Dp)
-        # psf = psf[1]
-        # @info "PSF Correction $psf"
-        # xp .*= psf[1]
-
-        # xp .*= (1/sqrt(2*pi)) # Don't do this!
-        # ##################################################################
-        # # Initalise CG iterations
-        # ##################################################################
-        # # r0 = A x0 - b; p0 = - r0; i = 0
-        # r = similar(xp)
-        # p = similar(xp)
-        # c = similar(xp)
-
-        # # r0 = A x0 - b
-        # copyto!(r, xp)
-        # mul!(r, P, r)
-        # @bfor r[I] *= K[I]
-        # mul!(r, iP, r)
-        # @bfor r[I] muladd(m[I], r[I], -F̂[I])
-        
-        # # p0 = - r0
-        # p .-= r
-        
-        # residual = norm(r)
-
-        # if verbose
-        #     @printf("\n iter\t  ||x-xprev||/||x||\n")
-        # end
-
-        # for i in 1:maxit
-        #     x0, xp = xp, x0
-
-        #     # Check for termination first
-        #     if done(maxit, i, ϵ, residual)
-        #         return nothing
-        #     end
-        #     ##################################################################
-        #     # CG 
-        #     ##################################################################
-            
-        #     # c = A * pk
-        #     mul!(c, P, p)
-        #     @bfor c[I] *= K[I]
-        #     mul!(c, iP, c)
-        #     @bfor c[I] *= m[I]
-
-        #     pTAp = zeroT
-        #     @bfor pTAp += p[I]*c[I]
-
-        #     α = residual^2 / pTAp
-
-        #     # Improve solution and residual
-        #     xp .+= α .* p
-        #     r .-= α .* c
-
-        #     prev_residual = residual
-        #     @batch threadlocal=zeros(T, 1)::Vector{T} for I in eachindex(r)
-        #         a = r[I]
-        #         threadlocal = muladd(a, a, threadlocal)
-        #     end
-        #     residual = sqrt.(sum(threadlocal::Vector{Vector{T}}))
-
-        #     # u := r + βu (almost an axpy)
-        #     β = residual^2 / prev_residual^2
-        #     @bfor p[I] = r[I] + β * p[I]          
-
-        #     if verbose
-        #         @printf("%3d/%d\t    %.4e\n", i, maxit, residual)
-        #     end
-
-        # end
 
         unpadarray!(@view(x[:,:,:,t]), xp)
         
@@ -231,16 +165,10 @@ function _ikd!(
     return x
 end
 
-# @inline converged(tol::Real, residual::Real) = residual ≤ tol
-
-# @inline done(maxiter::Int, iteration::Int, tol::Real, residual::Real) = iteration ≥ maxiter || converged(tol, residual)
-
 function _A_ikd!(Av, v, K, m, P, iP, sz)
     Av = reshape(Av, sz)
     v = reshape(v, sz)
     v̂ = P*v
-    # @bfor v[I] *= m[I]
-    # mul!(Av, P, v)
     @bfor v̂[I] *= K[I]
     mul!(Av, iP, v̂)
     @bfor Av[I] *= m[I]
