@@ -46,9 +46,9 @@ function ikd(
     pad::NTuple{3, Integer} = (0, 0, 0),
     Dkernel::Symbol = :k,
     bdir::NTuple{3, Real} = (0, 0, 1),
-    delta::Real = 0.28,
+    delta::Real = 0.25,
     tol::Real = 1e-1,
-    maxit::Integer = 100,
+    maxit::Integer = 30,
     verbose::Bool = false,
 ) where {T, N}
     N ∈ (3, 4) || throw(ArgumentError("arrays must be 3d or 4d, got $(N)d"))
@@ -150,8 +150,9 @@ function _ikd!(
         # psf = iP * (D./Dp)
         # psf = psf[1]
         # @info "PSF Correction $psf"
+        # xp .*= psf[1]
 
-        xp .*= (1/sqrt(2*pi))
+        # xp .*= (1/sqrt(2*pi)) # Don't do this!
         # ##################################################################
         # # Initalise CG iterations
         # ##################################################################
